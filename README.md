@@ -66,3 +66,21 @@ TPEx 網站欄位或公開資料路徑若變更，`cb_monitor.py` 的欄位解�
 - Historical low-price CB heat trend for CB price <= 105
 - GitHub Actions force-adds generated CSVs so `.gitignore` cannot block archival commits
 - Gemini API key supports Streamlit Cloud `st.secrets["GEMINI_API_KEY"]`
+
+
+## V4 修正：TPEx 舊 CSV 連結已失效
+
+V3 使用的舊式 `RSta0113.YYYYMMDD-C.csv` 路徑目前會回傳 TPEx 404 HTML，因此 Streamlit 會看到「抓取失敗／CSV 欄位無法辨識」。
+
+V4 已改成使用 TPEx 官方 OpenAPI：
+- `bond_cb_daily`：CB 每日買賣斷券商買賣日報資料
+- `bond_ISSBD5_data`：轉(交)換債發行/條件資料
+
+並加入 JSON response normalization、欄位別名辨識與重試機制。
+
+官方 TPEx OpenAPI 文件：
+https://www.tpex.org.tw/openapi/swagger.json
+
+部署後如仍出現抓取問題，可先在 GitHub Actions 手動執行：
+`python scripts/diagnose_tpex.py`
+查看 TPEx 實際回傳欄位。

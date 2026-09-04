@@ -11,16 +11,11 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
     "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
 }
-TPEx_CB_DAILY_PAGE = "https://www.tpex.org.tw/web/bond/tradeinfo/cb/CBDaily.php?l=zh-tw"
-TPEx_CB_DAILY_CSV = "https://www.tpex.org.tw/storage/bond_zone/tradeinfo/cb/{yyyy}/{yyyymm}/RSta0113.{yyyymmdd}-C.csv"
-TPEx_CB_LEGACY_CSV = "https://www.tpex.org.tw/web/bond_trading_info/bonds_info/daily/data/rsta0113.{yyyymmdd}-C.csv"
+TPEx_CB_DAILY_PAGE = "https://www.tpex.org.tw/zh-tw/bond/info/statistics-cb/day-quotes.html"
+TPEX_OPENAPI_BASE = "https://www.tpex.org.tw/openapi/v1"
+TPEX_CB_DAILY_API = f"{TPEX_OPENAPI_BASE}/bond_cb_daily"
+TPEX_CB_ISSUE_API = f"{TPEX_OPENAPI_BASE}/bond_ISSBD5_data"
 TWSE_MIS = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
-
-
-def _get(url, **kwargs):
-    r = requests.get(url, headers=HEADERS, timeout=30, **kwargs)
-    r.raise_for_status()
-    return r
 
 
 def clean_num(x):
@@ -51,61 +46,185 @@ def pick_col(columns, groups):
     return None
 
 
+def _get_json(url, **kwargs):
+    r = _get(url, **kwargs)
+    try:
+        return r.json()
+    except Exception as e:
+        raise RuntimeError(f"TPEx API 回傳不是 JSON：{url}；HTTP {r.status_code}") from e
+
+
+def _api_rows(payload):
+    """Normalize common TPEx OpenAPI response shapes into a list of dicts."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("data", "Data", "result", "results", "records"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        # Some APIs return a dict of records.
+        if payload and all(isinstance(v, dict) for v in payload.values()):
+            return list(payload.values())
+    return []
+
+
+def _norm_key(x):
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", str(x).lower())
+
+
+def _pick_json_field(rows, aliases, required=False):
+    if not rows:
+        return None
+    keys = list(rows[0].keys())
+    nkeys = {_norm_key(k): k for k in keys}
+    # Exact normalized match first.
+    for a in aliases:
+        na = _norm_key(a)
+        if na in nkeys:
+            return nkeys[na]
+    # Then substring match.
+    for a in aliases:
+        na = _norm_key(a)
+        for nk, original in nkeys.items():
+            if na and na in nk:
+                return original
+    if required:
+        raise ValueError(f"TPEx API 欄位無法辨識，現有欄位：{keys}")
+    return None
+
+
+def _json_rows_to_frame(rows):
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
 def fetch_cb_daily(date=None):
-    d = date.date() if isinstance(date, datetime) else (date or datetime.now().date())
+    """
+    Fetch CB daily market data from the current TPEx OpenAPI.
+
+    The previous V3 implementation depended on the legacy RSta0113 CSV URL,
+    which now returns a TPEx 404 HTML page. TPEx currently exposes the CB
+    broker daily report through the OpenAPI endpoint `bond_cb_daily`.
+    """
     last = None
-    for i in range(10):
-        dd = d - timedelta(days=i)
-        if dd.weekday() >= 5:
-            continue
-        yyyymmdd, yyyy, yyyymm = dd.strftime("%Y%m%d"), dd.strftime("%Y"), dd.strftime("%Y%m")
-        candidates = [
-            TPEx_CB_DAILY_CSV.format(yyyy=yyyy, yyyymm=yyyymm, yyyymmdd=yyyymmdd),
-            TPEx_CB_LEGACY_CSV.format(yyyymmdd=yyyymmdd),
-        ]
-        for url in candidates:
-            try:
-                raw = _get(url).content
-                text = None
-                for enc in ("utf-8-sig", "big5", "cp950", "utf-8"):
-                    try:
-                        text = raw.decode(enc)
-                        break
-                    except UnicodeDecodeError:
-                        pass
-                if text is None:
-                    continue
-                df = pd.read_csv(io.StringIO(text), dtype=str)
-                df = flatten_columns(df)
-                if len(df.columns) < 3:
-                    continue
-                out = normalize_daily(df)
-                out["資料日期"] = dd.isoformat()
-                return out
-            except Exception as e:
-                last = e
-    raise RuntimeError(f"無法取得 TPEx CB 每日 CSV。最後錯誤：{last}")
+    for attempt in range(3):
+        try:
+            payload = _get_json(TPEX_CB_DAILY_API)
+            rows = _api_rows(payload)
+            if not rows:
+                raise ValueError("TPEx bond_cb_daily API 回傳 0 筆資料。")
+            df = _json_rows_to_frame(rows)
+            out = normalize_daily(df)
+            if out.empty:
+                raise ValueError("TPEx bond_cb_daily API 有資料，但無法辨識有效 CB 價格。")
+            out["資料日期"] = datetime.now().date().isoformat()
+            return out
+        except Exception as e:
+            last = e
+            if attempt < 2:
+                import time
+                time.sleep(1.5 * (attempt + 1))
+    raise RuntimeError(
+        "無法取得 TPEx CB 每日行情（已改用 TPEx OpenAPI）。"
+        f"最後錯誤：{last}"
+    )
 
 
 def normalize_daily(df):
     df = flatten_columns(df)
-    code = pick_col(df.columns, [["代號"], ["證券代號"], ["債券代號"]])
-    name = pick_col(df.columns, [["名稱"], ["證券名稱"], ["債券名稱"]])
-    close = pick_col(df.columns, [["成交價"], ["收盤價"], ["收市價"], ["最後成交價"]])
-    volume = pick_col(df.columns, [["成交量"], ["成交股數"], ["成交張數"]])
-    amount = pick_col(df.columns, [["成交金額"], ["成交值"]])
+    code = pick_col(df.columns, [
+        ["證券代號"], ["債券代號"], ["代號"], ["bondcode"], ["securitiescode"]
+    ])
+    name = pick_col(df.columns, [
+        ["證券名稱"], ["債券名稱"], ["名稱"], ["bondname"], ["securitiesname"]
+    ])
+    close = pick_col(df.columns, [
+        ["收盤價"], ["收市價"], ["成交價"], ["最後成交價"],
+        ["closingprice"], ["close"], ["lastprice"], ["price"]
+    ])
+    volume = pick_col(df.columns, [
+        ["成交張數"], ["成交量"], ["成交股數"], ["tradingvolume"],
+        ["tradinglots"], ["volume"]
+    ])
+    amount = pick_col(df.columns, [
+        ["成交金額"], ["成交值"], ["transactionamount"], ["tradingamount"],
+        ["amount"]
+    ])
+
     if code is None or close is None:
-        raise ValueError(f"TPEx CSV 欄位無法辨識：{list(df.columns)}")
+        raise ValueError(f"TPEx API 欄位無法辨識：{list(df.columns)}")
+
     out = pd.DataFrame()
-    out["CB代號"] = df[code].astype(str).str.extract(r"(\d{4,6})")[0]
+    out["CB代號"] = (
+        df[code].astype(str).str.replace(r"\.0$", "", regex=True)
+        .str.extract(r"(\d{5,6})")[0]
+    )
     out["CB名稱"] = df[name].astype(str).str.strip() if name else ""
     out["CB價格"] = df[close].map(clean_num)
     out["成交量原始"] = df[volume].map(clean_num) if volume else np.nan
     out["成交金額原始"] = df[amount].map(clean_num) if amount else np.nan
     out["成交量(張)"] = out["成交量原始"]
     out["成交金額(千元)"] = out["成交金額原始"] / 1000 if amount else np.nan
+
     out = out.dropna(subset=["CB代號", "CB價格"])
-    return out[out["CB代號"].str.match(r"^\d{5,6}$", na=False)].drop_duplicates("CB代號")
+    out = out[out["CB代號"].str.match(r"^\d{5,6}$", na=False)]
+    return out.drop_duplicates("CB代號").reset_index(drop=True)
+
+
+def fetch_cb_terms_openapi():
+    """
+    Fetch current CB issuance/terms information from TPEx OpenAPI.
+    Used as the fallback/current source for conversion price and underlying.
+    """
+    payload = _get_json(TPEX_CB_ISSUE_API)
+    rows = _api_rows(payload)
+    if not rows:
+        raise ValueError("TPEx bond_ISSBD5_data API 回傳 0 筆資料。")
+    df = _json_rows_to_frame(rows)
+
+    code = _pick_json_field(df.to_dict("records"), [
+        "證券代號", "債券代號", "代號", "BondCode", "SecuritiesCode"
+    ], required=True)
+    conv = _pick_json_field(df.to_dict("records"), [
+        "轉換價格", "轉換價", "目前轉換價格", "ConversionPrice",
+        "CurrentConversionPrice"
+    ])
+    underlying = _pick_json_field(df.to_dict("records"), [
+        "轉換標的代號", "標的股票代號", "標的代號", "轉換標的",
+        "UnderlyingStockCode", "UnderlyingCode"
+    ])
+    name = _pick_json_field(df.to_dict("records"), [
+        "證券名稱", "債券名稱", "名稱", "BondName", "SecuritiesName"
+    ])
+    maturity = _pick_json_field(df.to_dict("records"), [
+        "到期日", "到期日期", "MaturityDate", "Maturity"
+    ])
+
+    out = pd.DataFrame()
+    out["CB代號"] = (
+        df[code].astype(str).str.replace(r"\.0$", "", regex=True)
+        .str.extract(r"(\d{5,6})")[0]
+    )
+    out["CB名稱板"] = df[name].astype(str).str.strip() if name else ""
+    out["轉換價格"] = df[conv].map(clean_num) if conv else np.nan
+    if underlying:
+        out["標的股票代號"] = (
+            df[underlying].astype(str).str.replace(r"\.0$", "", regex=True)
+            .str.extract(r"(\d{4})")[0]
+        )
+    else:
+        out["標的股票代號"] = out["CB代號"].str[:4]
+    if maturity:
+        out["到期日"] = df[maturity].astype(str).str.strip()
+    return out.dropna(subset=["CB代號"]).drop_duplicates("CB代號")
+
+
+def fetch_cb_board():
+    # Keep the old function name for compatibility with the app.
+    # It now uses the TPEx OpenAPI instead of the retired HTML table.
+    return fetch_cb_terms_openapi()
 
 
 def fetch_cb_board():
@@ -124,23 +243,8 @@ def fetch_cb_board():
 
 
 def normalize_board(df):
-    df = flatten_columns(df)
-    code = pick_col(df.columns, [["代號"], ["債券代號"], ["證券代號"]])
-    name = pick_col(df.columns, [["名稱"], ["債券名稱"], ["證券名稱"]])
-    conv = pick_col(df.columns, [["轉換價格"], ["轉換價"]])
-    underlying = pick_col(df.columns, [["轉換標的代號"], ["標的代號"], ["轉換標的"]])
-    maturity = pick_col(df.columns, [["到期日"], ["到期日期"]])
-    if code is None or conv is None:
-        raise ValueError(f"TPEx CB 資訊看板找不到代號/轉換價格欄位：{list(df.columns)}")
-    out = pd.DataFrame()
-    out["CB代號"] = df[code].astype(str).str.extract(r"(\d{5,6})")[0]
-    if name:
-        out["CB名稱板"] = df[name].astype(str).str.strip()
-    out["轉換價格"] = df[conv].map(clean_num)
-    out["標的股票代號"] = df[underlying].astype(str).str.extract(r"(\d{4})")[0] if underlying else out["CB代號"].str[:4]
-    if maturity:
-        out["到期日"] = df[maturity].astype(str).str.strip()
-    return out.dropna(subset=["CB代號"]).drop_duplicates("CB代號")
+    # Compatibility helper retained for external callers.
+    return fetch_cb_terms_openapi()
 
 
 def fetch_stock_prices(stock_ids: Iterable[str]):
