@@ -84,3 +84,11 @@ https://www.tpex.org.tw/openapi/swagger.json
 部署後如仍出現抓取問題，可先在 GitHub Actions 手動執行：
 `python scripts/diagnose_tpex.py`
 查看 TPEx 實際回傳欄位。
+
+
+## V5 修正
+- 修正 `name '_get' is not defined`：補上共用 HTTP GET helper。
+- 移除 V4 中誤殘留的舊 `fetch_cb_board()`，避免呼叫舊 TPEx HTML 頁面。
+- Streamlit 即時抓取失敗時，若存在 `data/latest.csv`，自動改讀最近成功快取。
+- 加入 GitHub Actions `workflow_dispatch`，可手動觸發每日資料更新。
+- 修正 CB 價格區間邊界：100–105 含 105；105–110 從 105 以上至 110。

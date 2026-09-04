@@ -24,8 +24,8 @@ def load_history_summary():
             total = int(price.notna().sum())
             le105 = int((price <= 105).sum())
             lt100 = int((price < 100).sum())
-            b105_110 = int(((price >= 105) & (price < 110)).sum())
-            b110_120 = int(((price >= 110) & (price <= 120)).sum())
+            b105_110 = int(((price > 105) & (price <= 110)).sum())
+            b110_120 = int(((price > 110) & (price <= 120)).sum())
             gt120 = int((price > 120).sum())
             rows.append({
                 "日期": f.stem,
@@ -84,10 +84,26 @@ if refresh or st.session_state.market is None:
     with st.spinner("正在抓取 TPEx CB 行情、轉換價格與標的股票價格…"):
         try:
             st.session_state.market = cached_load()
+            st.session_state.data_source = "LIVE"
         except Exception as e:
-            st.error(f"抓取失敗：{e}")
-            st.info("請稍後重試；GitHub Actions 若已成功更新 data/latest.csv，也可直接讀取快取資料。")
-            st.stop()
+            cache_path = Path("data/latest.csv")
+            if cache_path.exists():
+                try:
+                    st.session_state.market = pd.read_csv(cache_path)
+                    st.session_state.data_source = "CACHE"
+                    st.warning("⚠️ TPEx 即時抓取暫時失敗，已改用 GitHub Actions 最近一次成功更新的 data/latest.csv。")
+                except Exception:
+                    st.error(f"抓取失敗：{e}")
+                    st.stop()
+            else:
+                st.error(f"抓取失敗：{e}")
+                st.info("目前沒有可用的 data/latest.csv 快取；請先讓 GitHub Actions 成功跑一次更新。")
+                st.stop()
+
+if st.session_state.get("data_source") == "CACHE":
+    st.caption("資料狀態：🟡 CACHE｜來源：data/latest.csv")
+else:
+    st.caption("資料狀態：🟢 LIVE｜來源：TPEx OpenAPI + TWSE 公開資料")
 
 df = st.session_state.market.copy()
 if df.empty:
@@ -137,7 +153,14 @@ with left:
     st.markdown(f"**價格區間分布**　全市場平均：**{avg_price:.2f}**")
     bins = [0, 100, 105, 110, 120, float("inf")]
     labels = ["<100", "100–105", "105–110", "110–120", ">120"]
-    dist = pd.cut(df["CB價格"], bins=bins, labels=labels, right=False).value_counts().reindex(labels, fill_value=0)
+    price_series = pd.to_numeric(df["CB價格"], errors="coerce")
+    dist = pd.Series({
+        "<100": int((price_series < 100).sum()),
+        "100–105": int(((price_series >= 100) & (price_series <= 105)).sum()),
+        "105–110": int(((price_series > 105) & (price_series <= 110)).sum()),
+        "110–120": int(((price_series > 110) & (price_series <= 120)).sum()),
+        ">120": int((price_series > 120).sum()),
+    })
     st.bar_chart(dist)
 with right:
     st.markdown("**溢價率 vs CB 價格**")

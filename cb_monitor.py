@@ -46,6 +46,15 @@ def pick_col(columns, groups):
     return None
 
 
+def _get(url, **kwargs):
+    """HTTP GET helper used by TPEx/TWSE fetchers."""
+    kwargs.setdefault("headers", HEADERS)
+    kwargs.setdefault("timeout", 30)
+    r = requests.get(url, **kwargs)
+    r.raise_for_status()
+    return r
+
+
 def _get_json(url, **kwargs):
     r = _get(url, **kwargs)
     try:
@@ -225,21 +234,6 @@ def fetch_cb_board():
     # Keep the old function name for compatibility with the app.
     # It now uses the TPEx OpenAPI instead of the retired HTML table.
     return fetch_cb_terms_openapi()
-
-
-def fetch_cb_board():
-    r = _get(TPEx_CB_DAILY_PAGE)
-    tables = pd.read_html(io.StringIO(r.text))
-    best, score = None, -1
-    for t in tables:
-        t = flatten_columns(t)
-        txt = " ".join(map(str, t.columns)) + " " + " ".join(t.astype(str).head(5).fillna("").values.ravel())
-        s = sum(k in txt for k in ["轉換", "代號", "價格", "公司債"])
-        if s > score:
-            score, best = s, t
-    if best is None:
-        raise ValueError("TPEx CB 資訊看板沒有可解析的表格。")
-    return normalize_board(best)
 
 
 def normalize_board(df):
