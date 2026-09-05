@@ -92,3 +92,12 @@ https://www.tpex.org.tw/openapi/swagger.json
 - Streamlit 即時抓取失敗時，若存在 `data/latest.csv`，自動改讀最近成功快取。
 - 加入 GitHub Actions `workflow_dispatch`，可手動觸發每日資料更新。
 - 修正 CB 價格區間邊界：100–105 含 105；105–110 從 105 以上至 110。
+
+
+## V6 重要修正
+- CB 每日行情改回 TPEx 官方 RSta0113 CSV。URL 依日期自動組成：`/storage/bond_zone/tradeinfo/cb/YYYY/YYYYMM/RSta0113.YYYYMMDD-C.csv`。
+- `bond_cb_daily` 不再用作市場行情；該 API 是券商買賣日報。
+- 遇週末/休市，程式會往前最多尋找 7 天的最近可用 CSV。
+- CSV 解析支援 UTF-8 BOM、CP950/Big5，以及前置說明列。
+- 保留 V5 的 cache fallback、每日 archive、價格分布、負溢價、突破轉換價、Favorites、Gemini 與 GitHub Actions。
+- `bond_ISSBD5_data` 僅作 CB 條款/轉換價格來源；實際「有效轉換價格」仍應持續驗證公司行動/調整資料。

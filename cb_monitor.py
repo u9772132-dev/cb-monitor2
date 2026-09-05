@@ -109,57 +109,83 @@ def _json_rows_to_frame(rows):
     return pd.DataFrame(rows)
 
 
-def fetch_cb_daily(date=None):
-    """
-    Fetch CB daily market data from the current TPEx OpenAPI.
+def _tpex_csv_url(d):
+    d = pd.Timestamp(d).date()
+    yyyymm = d.strftime('%Y%m')
+    yyyymmdd = d.strftime('%Y%m%d')
+    return f"https://www.tpex.org.tw/storage/bond_zone/tradeinfo/cb/{d:%Y}/{yyyymm}/RSta0113.{yyyymmdd}-C.csv"
 
-    The previous V3 implementation depended on the legacy RSta0113 CSV URL,
-    which now returns a TPEx 404 HTML page. TPEx currently exposes the CB
-    broker daily report through the OpenAPI endpoint `bond_cb_daily`.
-    """
+
+def _read_tpex_csv(content):
+    """Read TPEx RSta0113 CSV, tolerating BOM/Big5/UTF-8 and preamble rows."""
     last = None
-    for attempt in range(3):
+    for enc in ('utf-8-sig', 'cp950', 'big5', 'utf-8'):
+        for skip in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+            try:
+                df = pd.read_csv(io.BytesIO(content), encoding=enc, skiprows=skip)
+                if df.empty or df.shape[1] < 3:
+                    continue
+                df = flatten_columns(df)
+                cols = [str(c) for c in df.columns]
+                # Avoid accepting a 404 HTML page or an unrelated CSV.
+                if any('證券代號' in c or '債券代號' in c or '代號' == c for c in cols):
+                    return df
+                # Some TPEx exports have English-ish headers.
+                if any('code' in c.lower() or 'security' in c.lower() for c in cols):
+                    return df
+            except Exception as e:
+                last = e
+    raise ValueError(f"TPEx CSV 無法解析；最後錯誤：{last}")
+
+
+def fetch_cb_daily(date=None):
+    """Fetch actual CB market closing data from TPEx RSta0113 daily CSV.
+
+    URL pattern supplied/verified by the user:
+    /storage/bond_zone/tradeinfo/cb/YYYY/YYYYMM/RSta0113.YYYYMMDD-C.csv
+    """
+    target = pd.Timestamp(date).date() if date is not None else datetime.now().date()
+    last = None
+    # On weekends/holidays, walk backwards to the latest available file.
+    for days_back in range(0, 8):
+        d = target - timedelta(days=days_back)
+        url = _tpex_csv_url(d)
         try:
-            payload = _get_json(TPEX_CB_DAILY_API)
-            rows = _api_rows(payload)
-            if not rows:
-                raise ValueError("TPEx bond_cb_daily API 回傳 0 筆資料。")
-            df = _json_rows_to_frame(rows)
-            out = normalize_daily(df)
+            r = _get(url, headers={**HEADERS, 'Referer': TPEx_CB_DAILY_PAGE})
+            if not r.content or r.content.lstrip().lower().startswith(b'<!doctype html'):
+                raise ValueError('TPEx 回傳 HTML/404，而非 CSV')
+            raw = _read_tpex_csv(r.content)
+            out = normalize_daily(raw)
             if out.empty:
-                raise ValueError("TPEx bond_cb_daily API 有資料，但無法辨識有效 CB 價格。")
-            out["資料日期"] = datetime.now().date().isoformat()
+                raise ValueError('TPEx CSV 有內容，但沒有有效 CB 行情')
+            out['資料日期'] = d.isoformat()
+            out['資料來源'] = 'TPEx RSta0113 CSV'
+            out['資料來源URL'] = url
             return out
         except Exception as e:
             last = e
-            if attempt < 2:
-                import time
-                time.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(
-        "無法取得 TPEx CB 每日行情（已改用 TPEx OpenAPI）。"
-        f"最後錯誤：{last}"
-    )
+    raise RuntimeError(f"無法取得 TPEx CB 每日 CSV。最後錯誤：{last}")
 
 
 def normalize_daily(df):
     df = flatten_columns(df)
     code = pick_col(df.columns, [
-        ["證券代號"], ["債券代號"], ["代號"], ["bondcode"], ["securitiescode"]
+        ["證券代號"], ["債券代號"], ["證券編號"], ["代號"], ["bondcode"], ["securitiescode"], ["code"]
     ])
     name = pick_col(df.columns, [
-        ["證券名稱"], ["債券名稱"], ["名稱"], ["bondname"], ["securitiesname"]
+        ["證券名稱"], ["債券名稱"], ["證券名稱"], ["名稱"], ["bondname"], ["securitiesname"], ["name"]
     ])
     close = pick_col(df.columns, [
-        ["收盤價"], ["收市價"], ["成交價"], ["最後成交價"],
+        ["收盤價"], ["收市價"], ["成交價"], ["最後成交價"], ["成交價格"],
         ["closingprice"], ["close"], ["lastprice"], ["price"]
     ])
     volume = pick_col(df.columns, [
-        ["成交張數"], ["成交量"], ["成交股數"], ["tradingvolume"],
-        ["tradinglots"], ["volume"]
+        ["成交張數"], ["成交量"], ["成交股數"], ["成交數量"], ["tradingvolume"],
+        ["tradinglots"], ["volume"], ["lots"]
     ])
     amount = pick_col(df.columns, [
-        ["成交金額"], ["成交值"], ["transactionamount"], ["tradingamount"],
-        ["amount"]
+        ["成交金額"], ["成交值"], ["成交金額(元)"], ["transactionamount"], ["tradingamount"],
+        ["amount"], ["turnover"]
     ])
 
     if code is None or close is None:
@@ -184,8 +210,8 @@ def normalize_daily(df):
 
 def fetch_cb_terms_openapi():
     """
-    Fetch current CB issuance/terms information from TPEx OpenAPI.
-    Used as the fallback/current source for conversion price and underlying.
+    Fetch CB issuance/terms information from TPEx OpenAPI.
+    This is a terms source, not the daily market quote source.
     """
     payload = _get_json(TPEX_CB_ISSUE_API)
     rows = _api_rows(payload)
