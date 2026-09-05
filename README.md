@@ -101,3 +101,11 @@ https://www.tpex.org.tw/openapi/swagger.json
 - CSV 解析支援 UTF-8 BOM、CP950/Big5，以及前置說明列。
 - 保留 V5 的 cache fallback、每日 archive、價格分布、負溢價、突破轉換價、Favorites、Gemini 與 GitHub Actions。
 - `bond_ISSBD5_data` 僅作 CB 條款/轉換價格來源；實際「有效轉換價格」仍應持續驗證公司行動/調整資料。
+
+
+## V6 Debug 修正
+- CB 每日行情唯一主來源：TPEx `RSta0113.YYYYMMDD-C.csv`。
+- `bond_cb_daily` 已完全從每日行情流程移除，不再呼叫、不再做欄位解析。
+- 因此不可能再因 `FinancialInstitutionsCode / ParValueOfPurchase / AmountOfPurchase` 觸發每日行情錯誤。
+- CSV 解析支援 UTF-8-SIG、CP950、Big5、UTF-8，以及常見分隔格式。
+- 應用程式首頁會顯示「資料引擎 V6 - TPEx RSta0113 CSV」，方便確認部署的版本。

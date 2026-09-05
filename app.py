@@ -41,6 +41,8 @@ def load_history_summary():
             pass
     return pd.DataFrame(rows)
 
+st.caption("資料引擎 V6 - TPEx RSta0113 CSV")
+
 st.set_page_config(page_title="Taiwan CB Relative Value Dashboard", page_icon="📊", layout="wide")
 
 st.markdown("""

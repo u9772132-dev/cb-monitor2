@@ -13,7 +13,6 @@ HEADERS = {
 }
 TPEx_CB_DAILY_PAGE = "https://www.tpex.org.tw/zh-tw/bond/info/statistics-cb/day-quotes.html"
 TPEX_OPENAPI_BASE = "https://www.tpex.org.tw/openapi/v1"
-TPEX_CB_DAILY_API = f"{TPEX_OPENAPI_BASE}/bond_cb_daily"
 TPEX_CB_ISSUE_API = f"{TPEX_OPENAPI_BASE}/bond_ISSBD5_data"
 TWSE_MIS = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 
@@ -60,21 +59,21 @@ def _get_json(url, **kwargs):
     try:
         return r.json()
     except Exception as e:
-        raise RuntimeError(f"TPEx API 回傳不是 JSON：{url}；HTTP {r.status_code}") from e
+        raise RuntimeError(f"TPEx 條款 API 回傳不是 JSON：{url}；HTTP {r.status_code}") from e
 
 
 def _api_rows(payload):
-    """Normalize common TPEx OpenAPI response shapes into a list of dicts."""
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        for key in ("data", "Data", "result", "results", "records"):
+        for key in ("data", "Data", "result", "Result", "results", "records", "Records"):
             value = payload.get(key)
             if isinstance(value, list):
                 return value
-        # Some APIs return a dict of records.
-        if payload and all(isinstance(v, dict) for v in payload.values()):
-            return list(payload.values())
+            if isinstance(value, dict):
+                rows = _api_rows(value)
+                if rows:
+                    return rows
     return []
 
 
@@ -85,28 +84,20 @@ def _norm_key(x):
 def _pick_json_field(rows, aliases, required=False):
     if not rows:
         return None
-    keys = list(rows[0].keys())
-    nkeys = {_norm_key(k): k for k in keys}
-    # Exact normalized match first.
-    for a in aliases:
-        na = _norm_key(a)
-        if na in nkeys:
-            return nkeys[na]
-    # Then substring match.
-    for a in aliases:
-        na = _norm_key(a)
-        for nk, original in nkeys.items():
-            if na and na in nk:
+    keys=list(rows[0].keys())
+    normalized={_norm_key(k):k for k in keys}
+    for alias in aliases:
+        a=_norm_key(alias)
+        if a in normalized:
+            return normalized[a]
+    for alias in aliases:
+        a=_norm_key(alias)
+        for nk, original in normalized.items():
+            if a and a in nk:
                 return original
     if required:
-        raise ValueError(f"TPEx API 欄位無法辨識，現有欄位：{keys}")
+        raise ValueError(f"TPEx CB 條款資料缺少必要欄位；收到欄位：{keys}")
     return None
-
-
-def _json_rows_to_frame(rows):
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows)
 
 
 def _tpex_csv_url(d):
@@ -122,7 +113,7 @@ def _read_tpex_csv(content):
     for enc in ('utf-8-sig', 'cp950', 'big5', 'utf-8'):
         for skip in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
             try:
-                df = pd.read_csv(io.BytesIO(content), encoding=enc, skiprows=skip)
+                df = pd.read_csv(io.BytesIO(content), encoding=enc, skiprows=skip, sep=None, engine='python')
                 if df.empty or df.shape[1] < 3:
                     continue
                 df = flatten_columns(df)
@@ -189,7 +180,7 @@ def normalize_daily(df):
     ])
 
     if code is None or close is None:
-        raise ValueError(f"TPEx API 欄位無法辨識：{list(df.columns)}")
+        raise ValueError(f"TPEx 每日行情 CSV 欄位無法辨識：{list(df.columns)}")
 
     out = pd.DataFrame()
     out["CB代號"] = (
@@ -257,8 +248,7 @@ def fetch_cb_terms_openapi():
 
 
 def fetch_cb_board():
-    # Keep the old function name for compatibility with the app.
-    # It now uses the TPEx OpenAPI instead of the retired HTML table.
+    # Compatibility wrapper: CB terms only.
     return fetch_cb_terms_openapi()
 
 
